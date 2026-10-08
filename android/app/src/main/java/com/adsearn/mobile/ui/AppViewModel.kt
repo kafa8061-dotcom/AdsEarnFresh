@@ -251,7 +251,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         401 -> "Your secure session has expired. Please try again."
         409 -> exception.response()?.errorBody()?.string()?.let(::extractDetail) ?: "This action is not available for your account right now."
         429 -> "You've reached today's limit. Come back tomorrow."
-        503 -> "No advertisement is available right now. Please try again later."
         else -> "We couldn't complete that request. Please try again."
     }
 

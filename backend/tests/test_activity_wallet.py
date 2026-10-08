@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from sqlalchemy.orm import Session
 
-from app.models import AdEvent, User
+from app.models import AdEvent, User, Wallet, WalletTransaction
 from app import main as api_main
 from conftest import start_session
 
@@ -152,16 +152,100 @@ def test_support_replies_and_statuses_are_role_and_user_scoped(client, auth, db_
     assert client.get("/v1/admin/support/tickets", headers=auth).status_code == 403
 
 
-def test_user_cannot_read_another_users_data(client):
+def test_user_cannot_read_another_users_data(client, db_engine):
     first = start_session(client)
     second = start_session(client)
     first_headers = {"Authorization": "Bearer " + first["access_token"]}
     second_headers = {"Authorization": "Bearer " + second["access_token"]}
-    client.put("/v1/profile", headers=first_headers, json={
+    saved_profile = client.put("/v1/profile", headers=first_headers, json={
         "full_name": "First User", "email": "first@example.com", "country_iso": "US", "phone": "2025550125",
     })
+    assert saved_profile.status_code == 200
+    assert client.put("/v1/payment-method", headers=first_headers, json={
+        "country_iso": "US", "phone": "2025550125",
+    }).status_code == 200
+    with Session(db_engine) as db:
+        first_user = db.query(User).filter_by(public_id=first["user_id"]).one()
+        wallet = db.get(Wallet, first_user.id)
+        wallet.available_balance = Decimal("12.34")
+        db.add(WalletTransaction(
+            user_id=first_user.id, transaction_type="business_credit",
+            amount=Decimal("12.34"), status="COMPLETED", reference="audited-funding",
+        ))
+        db.commit()
+    withdrawal = client.post("/v1/withdrawals", headers=first_headers, json={
+        "amount": "5.00", "request_key": str(uuid4()),
+    })
+    assert withdrawal.status_code == 201
+    ticket = client.post("/v1/support", headers=first_headers, json={
+        "category": "Account", "description": "Please review this private account support request.",
+    }).json()
     assert client.get("/v1/profile", headers=second_headers).json()["full_name"] is None
     assert client.get("/v1/dashboard", headers=second_headers).json()["user_id"] == second["user_id"]
+    second_wallet = client.get("/v1/wallet", headers=second_headers).json()
+    assert second_wallet["available_balance"] == "0.00"
+    assert second_wallet["transactions"] == []
+    first_wallet = client.get("/v1/wallet", headers=first_headers).json()
+    assert first_wallet["available_balance"] == "7.34"
+    assert {
+        (item["transaction_type"], item["amount"]) for item in first_wallet["transactions"]
+    } == {
+        ("business_credit", "12.34"), ("withdrawal", "-5.00"),
+    }
+    assert client.get("/v1/payment-method", headers=second_headers).json() is None
+    assert client.get("/v1/withdrawals", headers=second_headers).json() == []
+    assert client.get("/v1/withdrawals", headers=first_headers).json()[0]["withdrawal_id"] == withdrawal.json()["withdrawal_id"]
+    assert client.put(
+        f"/v1/admin/withdrawals/{withdrawal.json()['withdrawal_id']}",
+        headers=second_headers,
+        json={"status": "PAID", "payment_reference": "forged"},
+    ).status_code == 403
+    assert client.get(
+        f"/v1/admin/withdrawals/{withdrawal.json()['withdrawal_id']}/payment-destination",
+        headers=second_headers,
+    ).status_code == 403
+    assert client.get("/v1/support/tickets", headers=second_headers).json() == []
+    assert client.get("/v1/notifications", headers=second_headers).json() == []
+    assert client.post(f"/v1/support/tickets/{ticket['ticket_id']}/messages", headers=second_headers, json={
+        "body": "Attempt to access another user's private ticket.",
+    }).status_code == 404
+
+
+def test_protected_mutations_require_a_valid_session(client):
+    assert client.put("/v1/profile", json={
+        "full_name": "Attacker", "email": "attacker@example.com",
+        "country_iso": "US", "phone": "2025550125",
+    }).status_code == 401
+    assert client.put("/v1/payment-method", json={
+        "country_iso": "US", "phone": "2025550125",
+    }).status_code == 401
+    assert client.post("/v1/withdrawals", json={
+        "amount": "1.00", "request_key": str(uuid4()),
+    }).status_code == 401
+    assert client.post("/v1/support", json={
+        "category": "Account", "description": "Unauthenticated account modification test.",
+    }).status_code == 401
+    assert client.put("/v1/notification-preferences", json={
+        "daily_ads": False, "withdrawals": False, "support": False, "account": False,
+    }).status_code == 401
+    assert client.put("/v1/admin/withdrawals/fake", json={"status": "PAID"}).status_code == 401
+
+
+def test_ad_reservations_are_bound_to_authenticated_session(client, db_engine):
+    from sqlalchemy.orm import Session
+
+    first = start_session(client)
+    second = start_session(client)
+    first_headers = {"Authorization": "Bearer " + first["access_token"]}
+    second_headers = {"Authorization": "Bearer " + second["access_token"]}
+    reservation = client.post("/v1/ads/reservations", headers=first_headers).json()
+    with Session(db_engine) as db:
+        event = db.query(AdEvent).filter_by(reservation_id=reservation["reservation_id"]).one()
+        user = db.query(User).filter_by(public_id=first["user_id"]).one()
+        assert event.user_id == user.id
+    assert reservation["user_id"] == first["user_id"]
+    assert reservation["user_id"] != second["user_id"]
+    assert client.get("/v1/dashboard", headers=second_headers).json()["daily_ads"] == 0
 
 
 def test_wallet_reports_only_server_ledger_entries(client, auth):

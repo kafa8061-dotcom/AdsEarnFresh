@@ -13,6 +13,97 @@ def test_anonymous_session_is_unique_and_revocable(client):
     assert client.get("/v1/profile", headers=headers).status_code == 401
 
 
+def test_device_fingerprint_alone_cannot_recover_an_existing_account(client):
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    victim = start_session(client, "known-device-fingerprint")
+    victim_headers = {"Authorization": f"Bearer {victim['access_token']}"}
+    saved = client.put("/v1/profile", headers=victim_headers, json={
+        "full_name": "Private Profile", "email": "private@example.com",
+        "country_iso": "US", "phone": "2025550125",
+    })
+    assert saved.status_code == 200
+
+    attacker = start_session(
+        client, "known-device-fingerprint", device_key=ec.generate_private_key(ec.SECP256R1()),
+    )
+    attacker_headers = {"Authorization": f"Bearer {attacker['access_token']}"}
+    assert attacker["user_id"] != victim["user_id"]
+    assert client.get("/v1/profile", headers=attacker_headers).json()["full_name"] is None
+    assert client.get("/v1/wallet", headers=attacker_headers).json()["available_balance"] == "0.00"
+    assert client.get("/v1/profile", headers=victim_headers).json()["full_name"] == "Private Profile"
+
+
+def test_device_session_challenge_is_single_use(client):
+    import base64
+    from hashlib import sha256
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    fingerprint = sha256(b"challenge-replay-test").hexdigest()
+    challenge = client.post("/v1/session/challenge", json={"device_fingerprint": fingerprint}).json()
+    key = ec.generate_private_key(ec.SECP256R1())
+    public_key = key.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    message = f"AdsEarn device session v1\n{fingerprint}\n{challenge['nonce']}".encode("ascii")
+    signature = key.sign(message, ec.ECDSA(hashes.SHA256()))
+    request = {
+        "device_fingerprint": fingerprint,
+        "challenge_id": challenge["challenge_id"],
+        "public_key": base64.urlsafe_b64encode(public_key).decode().rstrip("="),
+        "signature": base64.urlsafe_b64encode(signature).decode().rstrip("="),
+    }
+    first = client.post("/v1/session", json=request)
+    assert first.status_code == 200
+    assert client.post("/v1/session", json=request).status_code == 401
+
+
+def test_device_proof_cannot_be_rebound_to_another_public_key(client):
+    import base64
+    from hashlib import sha256
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    fingerprint = sha256(b"key-tamper-test").hexdigest()
+    challenge = client.post("/v1/session/challenge", json={"device_fingerprint": fingerprint}).json()
+    key = ec.generate_private_key(ec.SECP256R1())
+    other_key = ec.generate_private_key(ec.SECP256R1())
+    public_key = key.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    other_public_key = other_key.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    message = f"AdsEarn device session v1\n{fingerprint}\n{challenge['nonce']}".encode("ascii")
+    signature = key.sign(message, ec.ECDSA(hashes.SHA256()))
+    result = client.post("/v1/session", json={
+        "device_fingerprint": fingerprint,
+        "challenge_id": challenge["challenge_id"],
+        "public_key": base64.urlsafe_b64encode(other_public_key).decode().rstrip("="),
+        "signature": base64.urlsafe_b64encode(signature).decode().rstrip("="),
+    })
+    assert result.status_code == 401
+
+
+def test_production_anonymous_sessions_fail_closed_until_device_attestation(client, monkeypatch):
+    from app import main as api_main
+
+    monkeypatch.setattr(api_main.settings, "environment", "production")
+    challenge = client.post("/v1/session/challenge", json={
+        "device_fingerprint": "a" * 64,
+    })
+    assert challenge.status_code == 503
+    assert "device attestation" in challenge.json()["detail"]
+    direct_session = client.post("/v1/session", json={
+        "device_fingerprint": "a" * 64,
+        "challenge_id": "cb967644-2728-409e-a797-f6d6baa121c3",
+        "public_key": "A" * 100,
+        "signature": "B" * 100,
+    })
+    assert direct_session.status_code == 503
+
+
 def test_profile_is_validated_and_stays_private(client, session):
     headers = {"Authorization": f"Bearer {session['access_token']}"}
     saved = client.put("/v1/profile", headers=headers, json={
@@ -88,14 +179,21 @@ def test_production_configuration_rejects_non_postgres_and_accepts_secure_values
     production.validate_deployment()
 
 
-def test_internal_user_id_cannot_be_written_by_profile(client, session):
+def test_internal_user_id_cannot_be_written_by_profile(client, session, db_engine):
     headers = {"Authorization": f"Bearer {session['access_token']}"}
     result = client.put("/v1/profile", headers=headers, json={
         "full_name": "Ada", "email": "ada@example.com", "country_iso": "US",
-        "phone": "2025550125", "user_id": "USR-FORGED",
+        "phone": "2025550125", "user_id": "USR-FORGED", "role": "admin",
     })
     assert result.status_code == 200
     assert result.json()["user_id"] == session["user_id"]
+
+    from sqlalchemy.orm import Session
+    from app.models import User
+
+    with Session(db_engine) as db:
+        user = db.query(User).filter_by(public_id=session["user_id"]).one()
+        assert user.role == "user"
 
 
 def test_reinstall_on_same_device_recovers_private_account_and_revokes_old_token(client):

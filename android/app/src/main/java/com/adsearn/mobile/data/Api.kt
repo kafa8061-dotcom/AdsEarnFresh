@@ -13,7 +13,13 @@ import retrofit2.http.PUT
 import retrofit2.http.Path
 
 data class SessionResponse(val access_token: String, val user_id: String)
-data class SessionRequest(val device_fingerprint: String)
+data class SessionChallengeResponse(val challenge_id: String, val nonce: String)
+data class SessionRequest(
+    val device_fingerprint: String,
+    val challenge_id: String,
+    val public_key: String,
+    val signature: String,
+)
 data class DashboardResponse(
     val user_name: String?,
     val user_id: String,
@@ -89,6 +95,8 @@ data class NotificationResponse(
 )
 
 interface AdsEarnApi {
+    @POST("v1/session/challenge")
+    suspend fun createSessionChallenge(@Body request: SessionRequestFingerprint): SessionChallengeResponse
     @POST("v1/session")
     suspend fun createSession(@Body request: SessionRequest): SessionResponse
     @POST("v1/session/logout")
@@ -124,6 +132,8 @@ interface AdsEarnApi {
     @GET("v1/support/tickets")
     suspend fun supportTickets(): List<SupportTicketResponse>
 }
+
+data class SessionRequestFingerprint(val device_fingerprint: String)
 
 object NetworkClient {
     fun create(sessionStore: SecureSessionStore): AdsEarnApi {

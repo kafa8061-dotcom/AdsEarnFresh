@@ -1,5 +1,6 @@
 import os
 from hashlib import sha256
+from functools import lru_cache
 from uuid import uuid4
 
 os.environ["ENVIRONMENT"] = "development"
@@ -9,6 +10,8 @@ os.environ["ADMIN_EMAILS"] = "admin@example.com"
 
 import pytest
 from fastapi.testclient import TestClient
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -52,10 +55,31 @@ def session(client):
     return start_session(client)
 
 
-def start_session(client, device_id=None):
+@lru_cache(maxsize=None)
+def _test_device_key(device_id):
+    return ec.generate_private_key(ec.SECP256R1())
+
+
+def start_session(client, device_id=None, device_key=None):
     source = device_id or str(uuid4())
     fingerprint = sha256(source.encode()).hexdigest()
-    response = client.post("/v1/session", json={"device_fingerprint": fingerprint})
+    key = device_key or _test_device_key(source)
+    challenge = client.post("/v1/session/challenge", json={"device_fingerprint": fingerprint})
+    assert challenge.status_code == 200
+    nonce = challenge.json()["nonce"]
+    public_key = key.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    payload = f"AdsEarn device session v1\n{fingerprint}\n{nonce}".encode("ascii")
+    signature = key.sign(payload, ec.ECDSA(hashes.SHA256()))
+    import base64
+
+    response = client.post("/v1/session", json={
+        "device_fingerprint": fingerprint,
+        "challenge_id": challenge.json()["challenge_id"],
+        "public_key": base64.urlsafe_b64encode(public_key).decode("ascii").rstrip("="),
+        "signature": base64.urlsafe_b64encode(signature).decode("ascii").rstrip("="),
+    })
     assert response.status_code == 200
     return response.json()
 

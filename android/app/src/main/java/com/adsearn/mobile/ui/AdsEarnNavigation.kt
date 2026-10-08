@@ -900,7 +900,7 @@ private fun SettingsScreen(
         }
         item {
             Text(
-                "Log out revokes your active session and clears its token. Starting another anonymous session on this device can restore its existing account.",
+                "Log out revokes your active session and removes its device key. A later anonymous session starts a new account; the old profile cannot be recovered.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

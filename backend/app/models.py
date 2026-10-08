@@ -17,6 +17,7 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     public_id: Mapped[str] = mapped_column(String(16), unique=True, index=True)
     device_binding: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
+    device_public_key: Mapped[str | None] = mapped_column(String(256))
     full_name: Mapped[str | None] = mapped_column(String(160))
     email: Mapped[str | None] = mapped_column(String(254), index=True)
     phone_e164: Mapped[str | None] = mapped_column(String(16))
@@ -32,6 +33,16 @@ class UserSession(Base):
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+
+
+class DeviceChallenge(Base):
+    __tablename__ = "device_challenges"
+    challenge_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    device_binding: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    nonce: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
 
 

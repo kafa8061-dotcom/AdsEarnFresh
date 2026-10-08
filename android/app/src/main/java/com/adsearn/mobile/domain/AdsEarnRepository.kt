@@ -7,12 +7,16 @@ import com.adsearn.mobile.data.PreferencesRequest
 import com.adsearn.mobile.data.ProfileRequest
 import com.adsearn.mobile.data.SecureSessionStore
 import com.adsearn.mobile.data.SessionRequest
+import com.adsearn.mobile.data.SessionRequestFingerprint
+import com.adsearn.mobile.data.DeviceIdentityStore
 import com.adsearn.mobile.data.SupportRequest
 import com.adsearn.mobile.data.SupportResponse
 import com.adsearn.mobile.data.SupportTicketResponse
 import com.adsearn.mobile.data.WalletResponse
 import com.adsearn.mobile.data.WithdrawalRequest
 import com.adsearn.mobile.data.WithdrawalResponse
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import retrofit2.HttpException
 
 interface AdsEarnRepository {
@@ -39,18 +43,29 @@ class ApiRepository(
     private val api: AdsEarnApi,
     private val sessionStore: SecureSessionStore,
     private val deviceFingerprint: String,
+    private val deviceIdentityStore: DeviceIdentityStore,
 ) : AdsEarnRepository {
-    override suspend fun openSession() {
+    private val sessionMutex = Mutex()
+
+    private suspend fun createBoundSession() {
+        val challenge = api.createSessionChallenge(SessionRequestFingerprint(deviceFingerprint))
+        val proof = deviceIdentityStore.sign(deviceFingerprint, challenge.nonce)
+        sessionStore.accessToken = api.createSession(
+            SessionRequest(deviceFingerprint, challenge.challenge_id, proof.publicKey, proof.signature),
+        ).access_token
+    }
+
+    override suspend fun openSession() = sessionMutex.withLock {
         if (sessionStore.accessToken == null) {
-            sessionStore.accessToken = api.createSession(SessionRequest(deviceFingerprint)).access_token
-            return
+            createBoundSession()
+            return@withLock
         }
         try {
             api.dashboard()
         } catch (exception: retrofit2.HttpException) {
             if (exception.code() != 401) throw exception
             sessionStore.accessToken = null
-            sessionStore.accessToken = api.createSession(SessionRequest(deviceFingerprint)).access_token
+            createBoundSession()
         }
     }
 
@@ -82,12 +97,13 @@ class ApiRepository(
         api.createSupportTicket(SupportRequest(category, description))
     override suspend fun loadSupportTickets() = api.supportTickets()
 
-    override suspend fun logout() {
+    override suspend fun logout() = sessionMutex.withLock {
         try {
             api.logout()
         } finally {
             sessionStore.accessToken = null
             sessionStore.clearWithdrawalRequestKey()
+            deviceIdentityStore.logout()
         }
     }
 }

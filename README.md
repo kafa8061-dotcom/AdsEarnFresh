@@ -1,6 +1,6 @@
 # AdsEarn
 
-New Kotlin/Jetpack Compose client and FastAPI service. The application opens directly on Home and creates a revocable, device-scoped anonymous server session in the background. The backend is authoritative for identity, ad quota, wallet, payment, withdrawals, and support.
+New Kotlin/Jetpack Compose client and FastAPI service. The application opens directly on Home and creates a revocable anonymous server session in the background. Session issuance requires a single-use server challenge signed with an Android Keystore P-256 private key. The server binds the key together with the app-scoped device fingerprint; the fingerprint alone cannot recover an account. Session tokens are random bearer credentials stored in Android encrypted preferences. Logout revokes the session, clears the token, and deletes the device key so the prior anonymous account cannot silently be reopened. The backend is authoritative for identity, ad quota, wallet, payment, withdrawals, and support.
 
 ## Layout
 
@@ -20,7 +20,7 @@ pytest -q
 uvicorn app.main:app --reload
 ```
 
-Tests use isolated SQLite databases; production refuses SQLite. The migration is Alembic-managed. `/health` checks the configured database. Anonymous accounts are bound to a server-HMAC of the app-scoped Android device identifier, so clearing app data or reinstalling on the same device recovers the existing profile and daily quota. Android transmits only a SHA-256 pseudonym. This is an anti-reinstall control, not hardware attestation; stronger abuse resistance requires provisioning a Google Play Integrity project and validating its tokens on the server.
+Tests use isolated SQLite databases; production refuses SQLite. The migration is Alembic-managed. `/health` checks the configured database. Android transmits a SHA-256 pseudonym of the app-scoped Android device identifier and a public key; only the matching non-exportable Android Keystore private key can resume that identity. Clearing app data or reinstalling can recover an account only if Android Keystore preserves the app key on that device. If the key is lost (for example after uninstall or device replacement), this anonymous account has no password-based recovery flow; a new key creates a separate account rather than granting access to the old one. This avoids account takeover but can make old profile/history inaccessible. Key possession does not prove device integrity or prevent account farming with newly generated keys. The production session endpoints therefore fail closed until a server-verified Google Play Integrity (or equivalent) attestation flow is implemented, provisioned, and validated; local development sessions do not claim this protection.
 
 ## Android
 

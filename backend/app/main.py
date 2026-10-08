@@ -12,18 +12,19 @@ from app.admob import verify_google_ssv
 from app.config import get_settings
 from app.database import get_db
 from app.models import (
-    AdEvent, Notification, NotificationPreference, PaymentMethod, SupportMessage,
+    AdEvent, DeviceChallenge, Notification, NotificationPreference, PaymentMethod, SupportMessage,
     SupportTicket, User, UserSession, Wallet, WalletTransaction, Withdrawal, now_utc,
 )
 from app.phones import normalize_phone
 from app.schemas import (
-    AdReservationOut, AdminWithdrawalUpdate, DashboardOut, NotificationOut, SessionStart,
+    AdReservationOut, AdminWithdrawalUpdate, DashboardOut, NotificationOut, SessionChallengeIn,
+    SessionChallengeOut, SessionStart,
     PaymentOut, PhoneIn, PreferencesIn, PreferencesOut, ProfileIn, ProfileOut, SessionOut,
     SupportIn, SupportMessageIn, SupportMessageOut, SupportStatusIn,
     SupportTicketOut, TransactionOut, WalletOut, WithdrawalIn, WithdrawalOut,
 )
 from app.security import (
-    create_session, current_user, decrypt_payment_number, digest_token,
+    create_session, current_user, decrypt_payment_number, digest_token, issue_device_challenge,
     encrypt_payment_number, require_admin,
 )
 
@@ -40,6 +41,14 @@ if settings.origins:
 api = APIRouter(prefix="/v1")
 AD_DAILY_LIMIT = 10
 AD_RESERVATION_TTL_MINUTES = 15
+
+
+def _require_production_device_attestation() -> None:
+    if settings.environment.casefold() == "production":
+        raise HTTPException(
+            status_code=503,
+            detail="Anonymous sessions require server-verified device attestation before production use",
+        )
 
 
 def _money(value: Decimal) -> Decimal:
@@ -89,7 +98,10 @@ def health(db: Session = Depends(get_db)) -> dict[str, str]:
 
 @api.post("/session", response_model=SessionOut)
 def start_session(payload: SessionStart, db: Session = Depends(get_db)) -> SessionOut:
-    user, token = create_session(db, payload.device_fingerprint)
+    _require_production_device_attestation()
+    user, token = create_session(
+        db, payload.device_fingerprint, str(payload.challenge_id), payload.public_key, payload.signature,
+    )
     db.scalar(select(User).where(User.id == user.id).with_for_update())
     wallet = db.get(Wallet, user.id)
     preferences = db.get(NotificationPreference, user.id)
@@ -99,6 +111,16 @@ def start_session(payload: SessionStart, db: Session = Depends(get_db)) -> Sessi
         db.add(NotificationPreference(user_id=user.id))
     db.commit()
     return SessionOut(access_token=token, user_id=user.public_id)
+
+
+@api.post("/session/challenge", response_model=SessionChallengeOut)
+def session_challenge(payload: SessionChallengeIn, db: Session = Depends(get_db)) -> SessionChallengeOut:
+    _require_production_device_attestation()
+    db.query(DeviceChallenge).filter(
+        DeviceChallenge.expires_at <= now_utc(),
+    ).delete(synchronize_session=False)
+    challenge = issue_device_challenge(db, payload.device_fingerprint)
+    return SessionChallengeOut(challenge_id=challenge.challenge_id, nonce=challenge.nonce)
 
 
 @api.post("/session/logout", status_code=status.HTTP_204_NO_CONTENT)

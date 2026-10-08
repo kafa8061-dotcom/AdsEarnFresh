@@ -11,8 +11,20 @@ class SessionOut(BaseModel):
     user_id: str
 
 
+class SessionChallengeIn(BaseModel):
+    device_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class SessionChallengeOut(BaseModel):
+    challenge_id: UUID
+    nonce: str
+
+
 class SessionStart(BaseModel):
     device_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    challenge_id: UUID
+    public_key: str = Field(min_length=80, max_length=256, pattern=r"^[A-Za-z0-9_-]+$")
+    signature: str = Field(min_length=80, max_length=256, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 class ProfileIn(BaseModel):

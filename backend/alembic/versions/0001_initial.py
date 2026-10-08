@@ -25,6 +25,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("public_id", sa.String(length=16), nullable=False),
         sa.Column("device_binding", sa.String(length=64), nullable=True),
+        sa.Column("device_public_key", sa.String(length=256), nullable=True),
         sa.Column("full_name", sa.String(length=160), nullable=True),
         sa.Column("email", sa.String(length=254), nullable=True),
         sa.Column("phone_e164", sa.String(length=16), nullable=True),
@@ -36,6 +37,18 @@ def upgrade() -> None:
     op.create_index("ix_users_device_binding", "users", ["device_binding"], unique=True)
     op.create_index("ix_users_email", "users", ["email"], unique=False)
     op.create_index("ix_users_public_id", "users", ["public_id"], unique=True)
+    op.create_table(
+        "device_challenges",
+        sa.Column("challenge_id", sa.String(length=36), nullable=False),
+        sa.Column("device_binding", sa.String(length=64), nullable=False),
+        sa.Column("nonce", sa.String(length=64), nullable=False),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("used_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.PrimaryKeyConstraint("challenge_id"),
+    )
+    op.create_index("ix_device_challenges_device_binding", "device_challenges", ["device_binding"], unique=False)
+    op.create_index("ix_device_challenges_expires_at", "device_challenges", ["expires_at"], unique=False)
     op.create_table(
         "ad_events",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -215,4 +228,7 @@ def downgrade() -> None:
     op.drop_index("ix_users_email", table_name="users")
     op.drop_index("ix_users_device_binding", table_name="users")
     op.drop_table("users")
+    op.drop_index("ix_device_challenges_expires_at", table_name="device_challenges")
+    op.drop_index("ix_device_challenges_device_binding", table_name="device_challenges")
+    op.drop_table("device_challenges")
     op.drop_table("google_ssv_keys")
