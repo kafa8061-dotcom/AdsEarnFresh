@@ -16,6 +16,12 @@ Select a region, availability/recovery objectives, backup retention, database ca
 
 Build the image from `AdsEarnFresh/backend` using its Dockerfile. Run the application as a non-root user. The image starts Uvicorn workers only; it does not create tables or run migrations on application startup. Supply the environment through the hosting platform's secret/configuration mechanism, not a committed `.env`.
 
+### Vercel deployment
+
+For the repository's Vercel project, set the project Root Directory to the repository root (not `android/` or `backend/`). The root `pyproject.toml` explicitly points Vercel to `vercel_app:app`; `vercel_app.py` adds the existing `backend/` package directory to Python's module path and exports the existing FastAPI instance. The root `requirements.txt` installs the unchanged backend dependency list. Do not create a second API implementation or replace the Docker deployment.
+
+Configure all required production environment variables from the hosting provider's secret/configuration manager before deploying. The application validates production settings at import/startup and intentionally fails closed if required values are missing or invalid. In particular, supply the real persistent PostgreSQL URL, stable secrets, API URL/hosts/CORS/proxy values, approved administrators, and Google settings as required by enabled features. Do not set session, AdMob SSV, funding, or withdrawal gates to enabled before their documented validations. Vercel deployment does not run Alembic automatically: run `alembic upgrade head` as a separate, reviewed operation against the production database before serving traffic. Use `/health/live` for process health and `/health/ready` for PostgreSQL/schema readiness.
+
 Configure every production value in `backend/.env.example` with owner-controlled values. In particular:
 
 - `DATABASE_URL` must point to persistent PostgreSQL using the installed psycopg 3 driver and `sslmode=verify-full`; configure the provider CA certificate if its driver configuration requires one.
