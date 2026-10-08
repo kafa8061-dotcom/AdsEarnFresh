@@ -8,7 +8,8 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi import HTTPException
 from sqlalchemy import BigInteger
 from sqlalchemy.dialects import postgresql
-from sqlalchemy.schema import CreateTable
+from sqlalchemy.schema import CreateIndex, CreateTable
+from sqlalchemy import Float, Numeric
 from sqlalchemy.orm import sessionmaker
 
 from app import admob
@@ -20,6 +21,27 @@ def test_ssv_timestamp_column_supports_millisecond_epoch_on_postgresql():
     ddl = str(CreateTable(AdEvent.__table__).compile(dialect=postgresql.dialect()))
     assert isinstance(AdEvent.__table__.c.ssv_timestamp_ms.type, BigInteger)
     assert "ssv_timestamp_ms BIGINT" in ddl
+
+
+def test_all_model_tables_and_indexes_compile_for_postgresql_with_exact_money():
+    from app.database import Base
+
+    for table in Base.metadata.sorted_tables:
+        str(CreateTable(table).compile(dialect=postgresql.dialect()))
+        for index in table.indexes:
+            str(CreateIndex(index).compile(dialect=postgresql.dialect()))
+
+    assert not any(
+        isinstance(column.type, Float)
+        for table in Base.metadata.tables.values()
+        for column in table.columns
+    )
+    for table_name, column_name in (
+        ("wallets", "available_balance"),
+        ("wallet_transactions", "amount"),
+        ("withdrawals", "amount"),
+    ):
+        assert isinstance(Base.metadata.tables[table_name].c[column_name].type, Numeric)
 
 
 def test_production_ssv_gate_is_case_insensitive(client, auth, monkeypatch):

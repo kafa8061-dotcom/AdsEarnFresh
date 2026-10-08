@@ -10,7 +10,7 @@ New Kotlin/Jetpack Compose client and FastAPI service. The application opens dir
 
 ## Backend development
 
-Python 3.11+ and PostgreSQL are required for a full deployment. Copy `backend/.env.example` to a private environment file, set a PostgreSQL `DATABASE_URL` and independent session, device-binding, and payment-encryption secrets, then:
+Python 3.11+ is required for local development; production requires persistent PostgreSQL. Copy `backend/.env.example` only as a variable reference: it deliberately contains invalid placeholders and must not be used until every production value is supplied through a private environment or secret manager. For local development, use development configuration, then:
 
 ```powershell
 python -m pip install -r backend/requirements.txt -r backend/requirements-dev.txt
@@ -20,7 +20,7 @@ pytest -q
 uvicorn app.main:app --reload
 ```
 
-Tests use isolated SQLite databases; production refuses SQLite. The migration is Alembic-managed. `/health` checks the configured database. Android transmits a SHA-256 pseudonym of the app-scoped Android device identifier and a public key; only the matching non-exportable Android Keystore private key can resume that identity. Clearing app data or reinstalling can recover an account only if Android Keystore preserves the app key on that device. If the key is lost (for example after uninstall or device replacement), this anonymous account has no password-based recovery flow; a new key creates a separate account rather than granting access to the old one. This avoids account takeover but can make old profile/history inaccessible. Production session creation additionally requires the backend to decode and validate a request-bound Google Play Integrity token. Local development sessions do not claim this protection.
+Tests use isolated SQLite databases; production rejects SQLite and requires certificate-verified PostgreSQL TLS. The migration is Alembic-managed and never runs automatically at application startup. `/health` checks database readiness; `/health/live` is the process liveness check. Android transmits a SHA-256 pseudonym of the app-scoped Android device identifier and a public key; only the matching non-exportable Android Keystore private key can resume that identity. Clearing app data or reinstalling can recover an account only if Android Keystore preserves the app key on that device. If the key is lost (for example after uninstall or device replacement), this anonymous account has no password-based recovery flow; a new key creates a separate account rather than granting access to the old one. This avoids account takeover but can make old profile/history inaccessible. Production session creation requires request-bound Google Play Integrity verification and remains explicitly disabled until enabled after external validation.
 
 ## Android
 
@@ -37,6 +37,8 @@ Development builds use Google's official test rewarded-ad unit and are labelled 
 
 Publisher revenue, ad completion activity, application reward ledger, and withdrawable wallet funds are separate. Ad completions never create money or wallet credits. There is no business rule or funded reward source in this project, so the wallet begins at zero and withdrawals cannot be fabricated. Admin withdrawal state changes are server role-gated; only an authorized administrator can record an actual payment reference and mark a transfer paid.
 
+Production wallet credits require a registered server-side reward policy and explicit funding configuration. No reward policy is registered; `WALLET_FUNDING_ENABLED=false`, `REWARD_POLICY_ID` is unset, and `WITHDRAWALS_ENABLED=false`. Reward amounts are not supplied by Android or inferred from AdMob publisher revenue. See [DEPLOYMENT.md](DEPLOYMENT.md) for the future policy requirements.
+
 The AdMob callback verifies Google's ECDSA signatures, reserved user/event association, configured rewarded ad unit (bound to the production App ID when the reservation is created), server timestamp, and unique transaction ID. Google SSV callbacks do not contain an `app_id` parameter; application association is enforced through the server-configured ad-unit mapping. Duplicate signed callbacks are idempotently acknowledged. Keep `ADMOB_SSV_VERIFIED=false` until the real HTTPS endpoint is configured in AdMob and a live Google callback has been validated. This workspace cannot provision a production database, domain, HTTPS service, AdMob account settings, or Play signing credentials; none is claimed as deployed.
 
 ### Google Play Integrity setup
@@ -45,4 +47,4 @@ In Google Play Console, link the production AdsEarn app to the intended Google C
 
 ## Launch prerequisites
 
-Provision persistent PostgreSQL and an HTTPS API, set secrets through the host's secret manager, configure gateway rate limits and the API domain, configure the AdMob SSV callback, live-test SSV before enabling it, provision Google Play Integrity for stronger device attestation, arrange reviewed/legitimate wallet funding rules before allowing withdrawals, and complete Play/legal/privacy release steps. Never commit environment files or signing keys.
+Read [DEPLOYMENT.md](DEPLOYMENT.md) for owner-controlled production resources, configuration, migrations, health probes, backups, and external setup. Provision persistent PostgreSQL and an HTTPS API, set secrets through the host's secret manager, configure gateway rate limits and the API domain, configure the AdMob SSV callback, live-test SSV before enabling it, provision Google Play Integrity for stronger device attestation, arrange reviewed/legitimate wallet funding rules before allowing withdrawals, and complete Play/legal/privacy release steps. Never commit environment files or signing keys.

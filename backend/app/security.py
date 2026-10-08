@@ -3,6 +3,7 @@ import hmac
 import secrets
 import base64
 import binascii
+import logging
 from datetime import timedelta
 from uuid import uuid4
 
@@ -22,6 +23,7 @@ from app.database import get_db
 from app.models import DeviceChallenge, User, UserSession, now_utc
 
 bearer = HTTPBearer(auto_error=False)
+logger = logging.getLogger("adsearn.security")
 SESSION_CHALLENGE_TTL = timedelta(minutes=5)
 
 
@@ -150,6 +152,7 @@ def current_user(
     db: Session = Depends(get_db),
 ) -> User:
     if credentials is None:
+        logger.warning("event=authentication_failure reason=missing_bearer_token")
         raise HTTPException(status_code=401, detail="A valid session is required")
     session = db.scalar(
         select(UserSession).where(
@@ -159,15 +162,18 @@ def current_user(
         )
     )
     if session is None:
+        logger.warning("event=authentication_failure reason=invalid_or_expired_session")
         raise HTTPException(status_code=401, detail="Session is invalid or expired")
     user = db.get(User, session.user_id)
     if user is None:
+        logger.warning("event=authentication_failure reason=orphaned_session")
         raise HTTPException(status_code=401, detail="Session is invalid or expired")
     return user
 
 
 def require_admin(user: User = Depends(current_user)) -> User:
     if user.role != "admin" or not user.email or user.email.casefold() not in get_settings().admins:
+        logger.warning("event=authorization_failure reason=admin_required")
         raise HTTPException(status_code=403, detail="Administrator access required")
     return user
 

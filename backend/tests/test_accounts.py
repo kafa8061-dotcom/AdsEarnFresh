@@ -86,22 +86,41 @@ def test_device_proof_cannot_be_rebound_to_another_public_key(client):
     assert result.status_code == 401
 
 
-def test_production_anonymous_sessions_fail_closed_until_device_attestation(client, monkeypatch):
+def test_production_anonymous_sessions_fail_closed_until_explicitly_enabled(client, monkeypatch):
     from app import main as api_main
 
     monkeypatch.setattr(api_main.settings, "environment", "production")
     challenge = client.post("/v1/session/challenge", json={
         "device_fingerprint": "a" * 64,
     })
-    assert challenge.status_code == 200
+    assert challenge.status_code == 503
+    assert "not enabled" in challenge.json()["detail"]
     direct_session = client.post("/v1/session", json={
         "device_fingerprint": "a" * 64,
+        "challenge_id": "00000000-0000-0000-0000-000000000000",
+        "public_key": "A" * 100,
+        "signature": "B" * 100,
+    })
+    assert direct_session.status_code == 503
+
+
+def test_enabled_production_session_still_requires_integrity_token(client, monkeypatch):
+    from app import main as api_main
+
+    monkeypatch.setattr(api_main.settings, "environment", "production")
+    monkeypatch.setattr(api_main.settings, "anonymous_sessions_enabled", True)
+    monkeypatch.setattr(api_main.settings, "edge_rate_limiting_configured", True)
+    challenge = client.post("/v1/session/challenge", json={
+        "device_fingerprint": "b" * 64,
+    })
+    response = client.post("/v1/session", json={
+        "device_fingerprint": "b" * 64,
         "challenge_id": challenge.json()["challenge_id"],
         "public_key": "A" * 100,
         "signature": "B" * 100,
     })
-    assert direct_session.status_code == 401
-    assert "attestation is required" in direct_session.json()["detail"]
+    assert response.status_code == 401
+    assert "attestation is required" in response.json()["detail"]
 
 
 def test_profile_is_validated_and_stays_private(client, session):
@@ -158,6 +177,49 @@ def test_missing_or_invalid_session_cannot_access_profile(client):
 
 def test_health_checks_database(client):
     assert client.get("/health").json() == {"status": "ok"}
+    assert client.get("/health/ready").json() == {"status": "ok"}
+    assert client.get("/health/live").json() == {"status": "ok"}
+    assert client.get("/health").headers["cache-control"] == "no-store"
+
+
+def test_readiness_reports_database_unavailable_without_leaking_connection_details(client, monkeypatch):
+    from app.database import get_db
+
+    class UnavailableDatabase:
+        def execute(self, _statement):
+            from sqlalchemy.exc import OperationalError
+
+            raise OperationalError("SELECT 1", {}, RuntimeError("private connection detail"))
+
+    def unavailable_db():
+        yield UnavailableDatabase()
+
+    from app.main import app
+    app.dependency_overrides[get_db] = unavailable_db
+    response = client.get("/health/ready")
+    assert response.status_code == 503
+    assert response.json() == {"status": "unavailable", "dependency": "database"}
+
+
+def test_readiness_rejects_schema_behind_application_revision(client, db_engine):
+    from sqlalchemy import text
+
+    with db_engine.begin() as connection:
+        connection.execute(text("UPDATE alembic_version SET version_num = 'stale_revision'"))
+    response = client.get("/health/ready")
+    assert response.status_code == 503
+    assert response.json() == {"status": "unavailable", "dependency": "database_schema"}
+
+
+def test_production_rejects_plain_http_transport(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import main as api_main
+
+    monkeypatch.setattr(api_main.settings, "environment", "production")
+    with TestClient(api_main.app, base_url="http://testserver") as insecure_client:
+        response = insecure_client.get("/v1/profile")
+    assert response.status_code == 400
+    assert response.json() == {"detail": "HTTPS is required"}
 
 
 def test_production_configuration_rejects_non_postgres_and_accepts_secure_values():
@@ -168,11 +230,15 @@ def test_production_configuration_rejects_non_postgres_and_accepts_secure_values
 
     production = Settings(
         environment="production",
-        database_url="postgresql+psycopg://db.adsearn.com/adsearn",
+        database_url="postgresql+psycopg://db.adsearn.com/adsearn?sslmode=verify-full",
         session_hmac_secret="session-secret-value-with-more-than-32-characters",
         device_binding_secret="device-binding-secret-with-more-than-32-characters",
         payment_encryption_key="MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=",
         public_base_url="https://api.adsearn.com/",
+        allowed_hosts="api.adsearn.com",
+        cors_origins="https://app.adsearn.com",
+        forwarded_allow_ips="10.0.0.10",
+        admin_emails="ops@adsearn.com",
         admob_app_id="ca-app-pub-4973946737213196~3854510671",
         admob_rewarded_unit_id="2667340525",
         play_integrity_cloud_project_number=123456789012,
@@ -180,6 +246,92 @@ def test_production_configuration_rejects_non_postgres_and_accepts_secure_values
         play_integrity_certificate_sha256="MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=",
     )
     production.validate_deployment()
+
+
+def test_production_configuration_rejects_placeholders_wildcard_cors_and_unverified_database_tls():
+    import pytest
+
+    valid = {
+        "environment": "production",
+        "database_url": "postgresql+psycopg://db.adsearn.com/adsearn?sslmode=verify-full",
+        "session_hmac_secret": "session-secret-value-with-more-than-32-characters",
+        "device_binding_secret": "device-binding-secret-with-more-than-32-characters",
+        "payment_encryption_key": "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=",
+        "public_base_url": "https://api.adsearn.com/",
+        "allowed_hosts": "api.adsearn.com",
+        "cors_origins": "https://app.adsearn.com",
+        "forwarded_allow_ips": "10.0.0.10",
+        "admin_emails": "ops@adsearn.com",
+        "play_integrity_cloud_project_number": 123456789012,
+        "play_integrity_certificate_sha256": "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=",
+    }
+    for overrides, error in (
+        ({"database_url": "postgresql+psycopg://db.adsearn.com/adsearn?sslmode=require"}, "verify-full"),
+        ({"database_url": "postgresql+psycopg://db.adsearn.com/adsearn?sslmode=verify-full&sslmode=require"}, "verify-full"),
+        ({"cors_origins": "*"}, "CORS_ORIGINS"),
+        ({"session_hmac_secret": "development-only-session-secret-change-before-production"}, "SESSION_HMAC_SECRET"),
+        ({"public_base_url": "https://<real-production-api-domain>/"}, "HTTPS public API URL"),
+        ({"admin_emails": "<approved-administrator-email-addresses>"}, "ADMIN_EMAILS"),
+    ):
+        with pytest.raises(ValueError, match=error):
+            Settings(**(valid | overrides)).validate_deployment()
+
+
+def test_production_sessions_stay_disabled_without_play_configuration():
+    import pytest
+
+    values = {
+        "environment": "production",
+        "database_url": "postgresql+psycopg://db.adsearn.com/adsearn?sslmode=verify-full",
+        "session_hmac_secret": "session-secret-value-with-more-than-32-characters",
+        "device_binding_secret": "device-binding-secret-with-more-than-32-characters",
+        "payment_encryption_key": "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=",
+        "public_base_url": "https://api.adsearn.com/",
+        "allowed_hosts": "api.adsearn.com",
+        "cors_origins": "https://app.adsearn.com",
+        "forwarded_allow_ips": "10.0.0.10",
+        "admin_emails": "ops@adsearn.com",
+    }
+    Settings(**values).validate_deployment()
+    with pytest.raises(ValueError, match="PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER"):
+        Settings(**(values | {
+            "anonymous_sessions_enabled": True,
+            "edge_rate_limiting_configured": True,
+        })).validate_deployment()
+
+
+def test_production_withdrawals_require_server_reward_funding_policy():
+    import pytest
+
+    values = {
+        "environment": "production",
+        "database_url": "postgresql+psycopg://db.adsearn.com/adsearn?sslmode=verify-full",
+        "session_hmac_secret": "session-secret-value-with-more-than-32-characters",
+        "device_binding_secret": "device-binding-secret-with-more-than-32-characters",
+        "payment_encryption_key": "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=",
+        "public_base_url": "https://api.adsearn.com/",
+        "allowed_hosts": "api.adsearn.com",
+        "cors_origins": "https://app.adsearn.com",
+        "forwarded_allow_ips": "10.0.0.10",
+        "admin_emails": "ops@adsearn.com",
+    }
+    Settings(**values).validate_deployment()
+    with pytest.raises(ValueError, match="funding policy"):
+        Settings(**(values | {"withdrawals_enabled": True})).validate_deployment()
+
+
+def test_database_urls_use_psycopg_three_for_application_and_migrations():
+    from app.database import normalize_database_url
+
+    assert normalize_database_url("postgres://user:pass@db.example/app") == (
+        "postgresql+psycopg://user:pass@db.example/app"
+    )
+    assert normalize_database_url("postgresql://user:pass@db.example/app") == (
+        "postgresql+psycopg://user:pass@db.example/app"
+    )
+    assert normalize_database_url("postgresql+psycopg://user:pass@db.example/app") == (
+        "postgresql+psycopg://user:pass@db.example/app"
+    )
 
 
 def test_internal_user_id_cannot_be_written_by_profile(client, session, db_engine):

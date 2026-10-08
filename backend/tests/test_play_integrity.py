@@ -179,6 +179,8 @@ def _production_session_request(client, source, token, device_key=None):
 def test_production_session_requires_and_accepts_server_verified_integrity(client, monkeypatch):
     monkeypatch.setattr(api_main.settings, "environment", "production")
     monkeypatch.setattr(api_main.settings, "play_integrity_package_name", PACKAGE_NAME)
+    monkeypatch.setattr(api_main.settings, "anonymous_sessions_enabled", True)
+    monkeypatch.setattr(api_main.settings, "edge_rate_limiting_configured", True)
     token = "valid-integrity-token"
     request, expected_hash = _production_session_request(client, "valid-production-session", token)
     monkeypatch.setattr(
@@ -195,6 +197,8 @@ def test_production_session_requires_and_accepts_server_verified_integrity(clien
 def test_production_session_rejects_replayed_integrity_token(client, monkeypatch):
     monkeypatch.setattr(api_main.settings, "environment", "production")
     monkeypatch.setattr(api_main.settings, "play_integrity_package_name", PACKAGE_NAME)
+    monkeypatch.setattr(api_main.settings, "anonymous_sessions_enabled", True)
+    monkeypatch.setattr(api_main.settings, "edge_rate_limiting_configured", True)
     token = "single-use-integrity-token"
     token_digest = hashlib.sha256(token.encode()).hexdigest()
     monkeypatch.setattr(api_main, "verify_integrity_token", lambda _token, _hash: token_digest)

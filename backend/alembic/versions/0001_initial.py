@@ -200,6 +200,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Destructive full-schema removal; do not use as a production rollback.
     op.drop_index("ix_support_messages_ticket_id", table_name="support_messages")
     op.drop_table("support_messages")
     op.drop_index("ix_withdrawals_withdrawal_id", table_name="withdrawals")

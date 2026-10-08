@@ -74,6 +74,28 @@ def test_ad_completions_never_credit_wallet(client, auth):
     assert client.get("/v1/dashboard", headers=auth).json()["daily_ads"] == 0
 
 
+def test_wallet_has_no_client_balance_or_reward_mutation_endpoint(client, auth):
+    assert client.put("/v1/wallet", headers=auth, json={
+        "available_balance": "1000.00",
+        "reward_amount": "10.00",
+    }).status_code == 405
+    assert client.post("/v1/rewards", headers=auth, json={
+        "amount": "10.00",
+    }).status_code == 404
+    wallet = client.get("/v1/wallet", headers=auth).json()
+    assert wallet["available_balance"] == "0.00"
+    assert wallet["transactions"] == []
+
+
+def test_verified_ad_event_is_not_funded_without_a_registered_server_policy(client, auth):
+    reservation = client.post("/v1/ads/reservations", headers=auth).json()
+    from app.wallet_accounting import REWARD_POLICIES
+
+    assert REWARD_POLICIES == {}
+    assert client.get("/v1/wallet", headers=auth).json()["available_balance"] == "0.00"
+    assert reservation["ad_unit_id"] == "2667340525"
+
+
 def test_payment_method_is_validated_and_masked(client, auth):
     saved = client.put("/v1/payment-method", headers=auth, json={"country_iso": "SO", "phone": "612345678"})
     assert saved.status_code == 200
@@ -90,6 +112,48 @@ def test_withdrawal_requires_payment_method_and_funded_wallet(client, auth):
     response = client.post("/v1/withdrawals", headers=auth, json=request)
     assert response.status_code == 409
     assert "Insufficient" in response.json()["detail"]
+
+
+def test_production_withdrawals_remain_disabled_even_with_balance(client, auth, db_engine, monkeypatch):
+    from app import main as api_main
+    from app.models import User
+
+    user_id = client.get("/v1/dashboard", headers=auth).json()["user_id"]
+    with Session(db_engine) as db:
+        user = db.query(User).filter_by(public_id=user_id).one()
+        db.get(Wallet, user.id).available_balance = Decimal("100.00")
+        db.commit()
+    monkeypatch.setattr(api_main.settings, "environment", "production")
+    monkeypatch.setattr(api_main.settings, "withdrawals_enabled", False)
+    response = client.post("/v1/withdrawals", headers=auth, json={
+        "amount": "1.00", "request_key": str(uuid4()),
+    })
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Withdrawals are not enabled"
+
+
+def test_wallet_accounting_rejects_non_decimal_or_unreferenced_movements(client, auth, db_engine):
+    from app.wallet_accounting import post_wallet_entry
+    import pytest
+
+    user_id = client.get("/v1/dashboard", headers=auth).json()["user_id"]
+    with Session(db_engine) as db:
+        user = db.query(User).filter_by(public_id=user_id).one()
+        with pytest.raises(TypeError):
+            post_wallet_entry(
+                db, user_id=user.id, amount_delta=1.0, transaction_type="credit",
+                status="COMPLETED", reference="bad-float",
+            )
+        with pytest.raises(ValueError):
+            post_wallet_entry(
+                db, user_id=user.id, amount_delta=Decimal("1.00"), transaction_type="credit",
+                status="COMPLETED", reference="",
+            )
+        with pytest.raises(ValueError):
+            post_wallet_entry(
+                db, user_id=user.id, amount_delta=Decimal("1.001"), transaction_type="credit",
+                status="COMPLETED", reference="fractional-cent",
+            )
 
 
 def test_support_and_preferences_are_backend_persisted(client, auth):

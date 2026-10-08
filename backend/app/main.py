@@ -1,18 +1,27 @@
 import hashlib
 import hmac
+import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from functools import lru_cache
+from pathlib import Path
 from uuid import uuid4
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse
 from phonenumbers import parse as parse_phone
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.admob import verify_google_ssv
 from app.config import get_settings
-from app.database import get_db
+from app.database import engine, get_db
 from app.models import (
     AdEvent, DeviceChallenge, Notification, NotificationPreference, PaymentMethod, SupportMessage,
     SupportTicket, User, UserSession, Wallet, WalletTransaction, Withdrawal, now_utc,
@@ -30,9 +39,27 @@ from app.security import (
     create_session, current_user, decrypt_payment_number, digest_token, issue_device_challenge,
     encrypt_payment_number, require_admin,
 )
+from app.wallet_accounting import configured_reward_policy, fund_verified_ad, post_wallet_entry
 
 settings = get_settings()
-app = FastAPI(title="AdsEarn API", version="1.0.0", docs_url=None if settings.environment == "production" else "/docs")
+logger = logging.getLogger("adsearn.security")
+is_production = settings.environment.casefold() == "production"
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    yield
+    engine.dispose()
+
+
+app = FastAPI(
+    title="AdsEarn API",
+    version="1.0.0",
+    docs_url=None if is_production else "/docs",
+    redoc_url=None if is_production else "/redoc",
+    openapi_url=None if is_production else "/openapi.json",
+    lifespan=lifespan,
+)
 if settings.origins:
     app.add_middleware(
         CORSMiddleware,
@@ -41,13 +68,49 @@ if settings.origins:
         allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["Authorization", "Content-Type"],
     )
+if is_production:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.hosts)
 api = APIRouter(prefix="/v1")
 AD_DAILY_LIMIT = 10
 AD_RESERVATION_TTL_MINUTES = 15
 
 
+@app.middleware("http")
+async def production_transport_and_security_headers(request: Request, call_next):
+    if (
+        settings.environment.casefold() == "production"
+        and request.url.scheme != "https"
+        and request.url.path != "/health/live"
+    ):
+        logger.warning("event=request_rejected reason=https_required")
+        return JSONResponse(status_code=400, content={"detail": "HTTPS is required"})
+
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store"
+    if request.url.scheme == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000"
+    return response
+
+
 def _money(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"))
+
+
+def _require_production_sessions_enabled() -> None:
+    if (
+        settings.environment.casefold() == "production"
+        and (not settings.anonymous_sessions_enabled or not settings.edge_rate_limiting_configured)
+    ):
+        raise HTTPException(status_code=503, detail="Production anonymous sessions are not enabled")
+
+
+@lru_cache(maxsize=1)
+def _expected_migration_heads() -> tuple[str, ...]:
+    config_path = Path(__file__).resolve().parents[1] / "alembic.ini"
+    return tuple(sorted(ScriptDirectory.from_config(Config(str(config_path))).get_heads()))
 
 
 def _withdrawal_out(item: Withdrawal) -> WithdrawalOut:
@@ -85,9 +148,29 @@ def _support_ticket_out(db: Session, ticket: SupportTicket) -> SupportTicketOut:
     )
 
 
+@app.get("/health/live")
+def liveness() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/health/ready")
 @app.get("/health")
-def health(db: Session = Depends(get_db)) -> dict[str, str]:
-    db.execute(text("SELECT 1"))
+def readiness(db: Session = Depends(get_db)):
+    try:
+        db.execute(text("SELECT 1"))
+    except SQLAlchemyError:
+        logger.warning("event=readiness_failed dependency=database")
+        return JSONResponse(status_code=503, content={"status": "unavailable", "dependency": "database"})
+    try:
+        current_heads = tuple(sorted(db.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalars().all()))
+    except SQLAlchemyError:
+        logger.warning("event=readiness_failed dependency=database_schema")
+        return JSONResponse(status_code=503, content={"status": "unavailable", "dependency": "database_schema"})
+    if current_heads != _expected_migration_heads():
+        logger.warning("event=readiness_failed dependency=database_schema")
+        return JSONResponse(status_code=503, content={"status": "unavailable", "dependency": "database_schema"})
     return {"status": "ok"}
 
 
@@ -95,6 +178,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, str]:
 def start_session(payload: SessionStart, db: Session = Depends(get_db)) -> SessionOut:
     integrity_digest = None
     if settings.environment.casefold() == "production":
+        _require_production_sessions_enabled()
         if not payload.integrity_token:
             raise HTTPException(status_code=401, detail="Play Integrity attestation is required")
         challenge = db.get(DeviceChallenge, str(payload.challenge_id))
@@ -139,6 +223,7 @@ def start_session(payload: SessionStart, db: Session = Depends(get_db)) -> Sessi
 
 @api.post("/session/challenge", response_model=SessionChallengeOut)
 def session_challenge(payload: SessionChallengeIn, db: Session = Depends(get_db)) -> SessionChallengeOut:
+    _require_production_sessions_enabled()
     db.query(DeviceChallenge).filter(
         DeviceChallenge.expires_at <= now_utc(),
     ).delete(synchronize_session=False)
@@ -291,6 +376,7 @@ async def admob_ssv(request: Request, db: Session = Depends(get_db)) -> dict[str
     event.reward_amount = int(params["reward_amount"]) if params.get("reward_amount", "").isdigit() else None
     event.calendar_day = datetime.fromtimestamp(event.ssv_timestamp_ms / 1000, timezone.utc).date()
     event.completed_at = now_utc()
+    fund_verified_ad(db, event, settings)
     _notification(db, event.user_id, "daily_ads", "Ad completion verified", "A rewarded ad completion was verified.")
     db.commit()
     return {"status": "verified"}
@@ -347,6 +433,10 @@ def get_payment_method(user: User = Depends(current_user), db: Session = Depends
 
 @api.post("/withdrawals", response_model=WithdrawalOut, status_code=status.HTTP_201_CREATED)
 def request_withdrawal(payload: WithdrawalIn, user: User = Depends(current_user), db: Session = Depends(get_db)) -> WithdrawalOut:
+    if settings.environment.casefold() == "production" and (
+        not settings.withdrawals_enabled or configured_reward_policy(settings) is None
+    ):
+        raise HTTPException(status_code=503, detail="Withdrawals are not enabled")
     if payload.amount != _money(payload.amount):
         raise HTTPException(status_code=422, detail="Amount must use at most two decimal places")
     if payload.amount < settings.withdrawal_minimum:
@@ -360,14 +450,9 @@ def request_withdrawal(payload: WithdrawalIn, user: User = Depends(current_user)
         if existing.amount != payload.amount:
             raise HTTPException(status_code=409, detail="This request key was already used for a different amount")
         return _withdrawal_out(existing)
-    wallet = db.scalar(select(Wallet).where(Wallet.user_id == user.id).with_for_update())
     payment = db.scalar(select(PaymentMethod).where(PaymentMethod.user_id == user.id))
     if payment is None:
         raise HTTPException(status_code=409, detail="Save a WAAFI payment method before requesting a withdrawal")
-    if wallet is None or wallet.available_balance < payload.amount:
-        raise HTTPException(status_code=409, detail="Insufficient available balance")
-    wallet.available_balance -= payload.amount
-    wallet.updated_at = now_utc()
     withdrawal = Withdrawal(
         user_id=user.id, amount=payload.amount,
         request_key=str(payload.request_key),
@@ -377,10 +462,14 @@ def request_withdrawal(payload: WithdrawalIn, user: User = Depends(current_user)
     )
     db.add(withdrawal)
     db.flush()
-    db.add(WalletTransaction(
-        user_id=user.id, transaction_type="withdrawal", amount=-payload.amount,
-        status="PENDING", reference=withdrawal.withdrawal_id,
-    ))
+    post_wallet_entry(
+        db,
+        user_id=user.id,
+        amount_delta=-payload.amount,
+        transaction_type="withdrawal",
+        status="PENDING",
+        reference=withdrawal.withdrawal_id,
+    )
     _notification(db, user.id, "withdrawals", "Withdrawal submitted", "Your withdrawal request is pending review.")
     db.commit()
     db.refresh(withdrawal)
@@ -566,15 +655,14 @@ def update_withdrawal(
     if ledger_entry is not None:
         ledger_entry.status = payload.status
     if payload.status == "REJECTED":
-        wallet = db.scalar(select(Wallet).where(Wallet.user_id == item.user_id).with_for_update())
-        if wallet is None:
-            raise HTTPException(status_code=409, detail="Wallet record is unavailable")
-        wallet.available_balance += item.amount
-        wallet.updated_at = now_utc()
-        db.add(WalletTransaction(
-            user_id=item.user_id, transaction_type="withdrawal_reversal", amount=item.amount,
-            status="COMPLETED", reference=item.withdrawal_id,
-        ))
+        post_wallet_entry(
+            db,
+            user_id=item.user_id,
+            amount_delta=item.amount,
+            transaction_type="withdrawal_reversal",
+            status="COMPLETED",
+            reference=item.withdrawal_id,
+        )
     _notification(
         db, item.user_id, "withdrawals",
         f"Withdrawal {payload.status.lower()}",
