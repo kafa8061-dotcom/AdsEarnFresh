@@ -1,0 +1,17 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.coverage
+*.db
+*.sqlite3
+htmlcov/
+*.py[cod]
+android/.gradle/
+android/.kotlin/
+android/local.properties
+android/**/build/
+android/.idea/
+*.jks
+*.keystore

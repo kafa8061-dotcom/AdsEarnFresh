@@ -1,0 +1,5 @@
+-keepattributes Signature
+-keepattributes *Annotation*
+-keep class com.google.gson.** { *; }
+-keep class com.adsearn.mobile.data.** { *; }
+-keep class com.google.android.gms.ads.** { *; }
