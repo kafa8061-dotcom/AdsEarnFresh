@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
@@ -16,6 +18,7 @@ from app.models import (
     SupportTicket, User, UserSession, Wallet, WalletTransaction, Withdrawal, now_utc,
 )
 from app.phones import normalize_phone
+from app.play_integrity import session_request_hash, verify_integrity_token
 from app.schemas import (
     AdReservationOut, AdminWithdrawalUpdate, DashboardOut, NotificationOut, SessionChallengeIn,
     SessionChallengeOut, SessionStart,
@@ -41,14 +44,6 @@ if settings.origins:
 api = APIRouter(prefix="/v1")
 AD_DAILY_LIMIT = 10
 AD_RESERVATION_TTL_MINUTES = 15
-
-
-def _require_production_device_attestation() -> None:
-    if settings.environment.casefold() == "production":
-        raise HTTPException(
-            status_code=503,
-            detail="Anonymous sessions require server-verified device attestation before production use",
-        )
 
 
 def _money(value: Decimal) -> Decimal:
@@ -98,9 +93,38 @@ def health(db: Session = Depends(get_db)) -> dict[str, str]:
 
 @api.post("/session", response_model=SessionOut)
 def start_session(payload: SessionStart, db: Session = Depends(get_db)) -> SessionOut:
-    _require_production_device_attestation()
+    integrity_digest = None
+    if settings.environment.casefold() == "production":
+        if not payload.integrity_token:
+            raise HTTPException(status_code=401, detail="Play Integrity attestation is required")
+        challenge = db.get(DeviceChallenge, str(payload.challenge_id))
+        challenge_expires_at = challenge.expires_at if challenge is not None else None
+        if challenge_expires_at is not None and challenge_expires_at.tzinfo is None:
+            challenge_expires_at = challenge_expires_at.replace(tzinfo=timezone.utc)
+        if (
+            challenge is None
+            or challenge.used_at is not None
+            or challenge_expires_at <= now_utc()
+        ):
+            raise HTTPException(status_code=401, detail="Device verification is invalid or expired")
+        expected_binding = hmac.new(
+            settings.device_binding_secret.encode(),
+            payload.device_fingerprint.encode("ascii"),
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(challenge.device_binding, expected_binding):
+            raise HTTPException(status_code=401, detail="Device verification is invalid or expired")
+        request_hash = session_request_hash(
+            settings.play_integrity_package_name,
+            payload.device_fingerprint,
+            str(payload.challenge_id),
+            challenge.nonce,
+            payload.public_key,
+        )
+        integrity_digest = verify_integrity_token(payload.integrity_token, request_hash)
     user, token = create_session(
         db, payload.device_fingerprint, str(payload.challenge_id), payload.public_key, payload.signature,
+        integrity_digest,
     )
     db.scalar(select(User).where(User.id == user.id).with_for_update())
     wallet = db.get(Wallet, user.id)
@@ -115,7 +139,6 @@ def start_session(payload: SessionStart, db: Session = Depends(get_db)) -> Sessi
 
 @api.post("/session/challenge", response_model=SessionChallengeOut)
 def session_challenge(payload: SessionChallengeIn, db: Session = Depends(get_db)) -> SessionChallengeOut:
-    _require_production_device_attestation()
     db.query(DeviceChallenge).filter(
         DeviceChallenge.expires_at <= now_utc(),
     ).delete(synchronize_session=False)

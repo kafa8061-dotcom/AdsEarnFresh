@@ -9,6 +9,7 @@ import com.adsearn.mobile.data.SecureSessionStore
 import com.adsearn.mobile.data.SessionRequest
 import com.adsearn.mobile.data.SessionRequestFingerprint
 import com.adsearn.mobile.data.DeviceIdentityStore
+import com.adsearn.mobile.data.PlayIntegrityClient
 import com.adsearn.mobile.data.SupportRequest
 import com.adsearn.mobile.data.SupportResponse
 import com.adsearn.mobile.data.SupportTicketResponse
@@ -44,14 +45,27 @@ class ApiRepository(
     private val sessionStore: SecureSessionStore,
     private val deviceFingerprint: String,
     private val deviceIdentityStore: DeviceIdentityStore,
+    private val playIntegrityClient: PlayIntegrityClient,
 ) : AdsEarnRepository {
     private val sessionMutex = Mutex()
 
     private suspend fun createBoundSession() {
         val challenge = api.createSessionChallenge(SessionRequestFingerprint(deviceFingerprint))
         val proof = deviceIdentityStore.sign(deviceFingerprint, challenge.nonce)
+        val integrityToken = if (com.adsearn.mobile.BuildConfig.IS_PRODUCTION) {
+            val requestHash = deviceIdentityStore.sessionRequestHash(
+                com.adsearn.mobile.BuildConfig.APPLICATION_ID,
+                deviceFingerprint,
+                challenge.challenge_id,
+                challenge.nonce,
+                proof.publicKey,
+            )
+            playIntegrityClient.requestToken(requestHash)
+        } else {
+            null
+        }
         sessionStore.accessToken = api.createSession(
-            SessionRequest(deviceFingerprint, challenge.challenge_id, proof.publicKey, proof.signature),
+            SessionRequest(deviceFingerprint, challenge.challenge_id, proof.publicKey, proof.signature, integrityToken),
         ).access_token
     }
 

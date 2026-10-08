@@ -25,6 +25,7 @@ class SessionStart(BaseModel):
     challenge_id: UUID
     public_key: str = Field(min_length=80, max_length=256, pattern=r"^[A-Za-z0-9_-]+$")
     signature: str = Field(min_length=80, max_length=256, pattern=r"^[A-Za-z0-9_-]+$")
+    integrity_token: str | None = Field(default=None, min_length=1, max_length=20_000)
 
 
 class ProfileIn(BaseModel):

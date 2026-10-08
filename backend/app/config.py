@@ -1,4 +1,6 @@
 from functools import lru_cache
+import base64
+import binascii
 from decimal import Decimal
 from ipaddress import ip_address
 from urllib.parse import urlparse
@@ -24,6 +26,9 @@ class Settings(BaseSettings):
     admob_app_id: str = "ca-app-pub-4973946737213196~3854510671"
     admob_rewarded_unit_id: str = "2667340525"
     admob_ssv_key_url: str = "https://www.gstatic.com/admob/reward/verifier-keys.json"
+    play_integrity_cloud_project_number: int = 0
+    play_integrity_package_name: str = "com.adsearn.mobile"
+    play_integrity_certificate_sha256: str = ""
     session_ttl_days: int = 30
     withdrawal_minimum: Decimal = Decimal("0.00")
 
@@ -43,6 +48,14 @@ class Settings(BaseSettings):
     @property
     def origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def play_integrity_certificate_digests(self) -> set[str]:
+        return {
+            value.strip()
+            for value in self.play_integrity_certificate_sha256.split(",")
+            if value.strip()
+        }
 
     def validate_deployment(self) -> None:
         if self.environment.lower() == "production":
@@ -99,6 +112,21 @@ class Settings(BaseSettings):
                 raise ValueError("Production AdMob App ID does not match the configured publisher app")
             if self.admob_rewarded_unit_id != "2667340525":
                 raise ValueError("Production AdMob rewarded unit ID does not match the configured unit")
+            if self.play_integrity_cloud_project_number <= 0:
+                raise ValueError("PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER is required in production")
+            if self.play_integrity_package_name != "com.adsearn.mobile":
+                raise ValueError("PLAY_INTEGRITY_PACKAGE_NAME does not match the production Android app")
+            if not self.play_integrity_certificate_digests:
+                raise ValueError("PLAY_INTEGRITY_CERTIFICATE_SHA256 must include the production signing certificate")
+            for digest in self.play_integrity_certificate_digests:
+                try:
+                    decoded = base64.b64decode(
+                        digest + "=" * (-len(digest) % 4), altchars=b"-_", validate=True,
+                    )
+                except (ValueError, binascii.Error) as exc:
+                    raise ValueError("Play Integrity certificate digests must be base64-encoded SHA-256 values") from exc
+                if len(decoded) != 32:
+                    raise ValueError("Play Integrity certificate digests must be base64-encoded SHA-256 values")
 
 
 @lru_cache

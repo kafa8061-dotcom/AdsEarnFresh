@@ -5,6 +5,7 @@ import android.security.keystore.KeyProperties
 import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.KeyStore
+import java.security.MessageDigest
 import java.security.Signature
 import java.util.Base64
 
@@ -30,6 +31,20 @@ class DeviceIdentityStore {
             publicKey = encoder.encodeToString(keyPair.public.encoded),
             signature = encoder.encodeToString(signature),
         )
+    }
+
+    fun sessionRequestHash(
+        packageName: String,
+        deviceFingerprint: String,
+        challengeId: String,
+        nonce: String,
+        publicKey: String,
+    ): String {
+        val request = listOf(
+            "adsearn-session-v1", packageName, deviceFingerprint, challengeId, nonce, publicKey,
+        ).joinToString("\n").toByteArray(Charsets.US_ASCII)
+        return MessageDigest.getInstance("SHA-256").digest(request)
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
     }
 
     private fun getOrCreateKeyPair(): KeyPair {

@@ -43,6 +43,7 @@ class DeviceChallenge(Base):
     nonce: Mapped[str] = mapped_column(String(64), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    integrity_token_digest: Mapped[str | None] = mapped_column(String(64), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
 
 

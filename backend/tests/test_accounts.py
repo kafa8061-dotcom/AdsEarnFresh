@@ -93,15 +93,15 @@ def test_production_anonymous_sessions_fail_closed_until_device_attestation(clie
     challenge = client.post("/v1/session/challenge", json={
         "device_fingerprint": "a" * 64,
     })
-    assert challenge.status_code == 503
-    assert "device attestation" in challenge.json()["detail"]
+    assert challenge.status_code == 200
     direct_session = client.post("/v1/session", json={
         "device_fingerprint": "a" * 64,
-        "challenge_id": "cb967644-2728-409e-a797-f6d6baa121c3",
+        "challenge_id": challenge.json()["challenge_id"],
         "public_key": "A" * 100,
         "signature": "B" * 100,
     })
-    assert direct_session.status_code == 503
+    assert direct_session.status_code == 401
+    assert "attestation is required" in direct_session.json()["detail"]
 
 
 def test_profile_is_validated_and_stays_private(client, session):
@@ -175,6 +175,9 @@ def test_production_configuration_rejects_non_postgres_and_accepts_secure_values
         public_base_url="https://api.adsearn.com/",
         admob_app_id="ca-app-pub-4973946737213196~3854510671",
         admob_rewarded_unit_id="2667340525",
+        play_integrity_cloud_project_number=123456789012,
+        play_integrity_package_name="com.adsearn.mobile",
+        play_integrity_certificate_sha256="MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=",
     )
     production.validate_deployment()
 

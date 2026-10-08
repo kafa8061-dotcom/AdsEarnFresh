@@ -56,6 +56,7 @@ def create_session(
     challenge_id: str,
     public_key: str,
     signature: str,
+    integrity_token_digest: str | None,
 ) -> tuple[User, str]:
     challenge = db.scalar(
         select(DeviceChallenge).where(
@@ -76,7 +77,19 @@ def create_session(
         db.commit()
         raise HTTPException(status_code=401, detail="Device verification is invalid or expired")
 
+    if get_settings().environment.casefold() == "production" and integrity_token_digest is None:
+        raise HTTPException(status_code=401, detail="Play Integrity attestation is required")
+    if integrity_token_digest is not None:
+        replayed = db.scalar(
+            select(DeviceChallenge.challenge_id).where(
+                DeviceChallenge.integrity_token_digest == integrity_token_digest,
+            )
+        )
+        if replayed is not None:
+            raise HTTPException(status_code=401, detail="Play Integrity token has already been used")
+
     challenge.used_at = now_utc()
+    challenge.integrity_token_digest = integrity_token_digest
     db.commit()
     try:
         public_key_der = base64.b64decode(

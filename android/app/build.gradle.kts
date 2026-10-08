@@ -14,6 +14,9 @@ val localProperties = Properties().apply {
 val configuredApiUrl = providers.gradleProperty("API_BASE_URL")
     .orElse(localProperties.getProperty("API_BASE_URL") ?: "")
     .get()
+val configuredIntegrityCloudProjectNumber = providers.gradleProperty("PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER")
+    .orElse(localProperties.getProperty("PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER") ?: "")
+    .get()
 if (gradle.startParameter.taskNames.any { it.contains("production", ignoreCase = true) }) {
     val apiUri = runCatching { URI(configuredApiUrl) }.getOrNull()
     val apiHost = apiUri?.host?.lowercase()?.removePrefix("[")?.removeSuffix("]")?.removeSuffix(".")
@@ -50,6 +53,9 @@ if (gradle.startParameter.taskNames.any { it.contains("production", ignoreCase =
     ) {
         "A real HTTPS API_BASE_URL is required for production variants; configure android/local.properties."
     }
+    require(configuredIntegrityCloudProjectNumber.toLongOrNull()?.let { it > 0 } == true) {
+        "PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER is required for production variants; configure android/local.properties."
+    }
 }
 
 android {
@@ -65,6 +71,7 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "API_BASE_URL", "\"${(configuredApiUrl.ifBlank { "https://api.example.invalid/" }).replace("\"", "\\\"")}\"")
         buildConfigField("String", "SUPPORT_EMAIL", "\"adsearn13@gmail.com\"")
+        buildConfigField("long", "PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER", "${configuredIntegrityCloudProjectNumber.toLongOrNull() ?: 0L}L")
     }
 
     flavorDimensions += "environment"
@@ -84,6 +91,7 @@ android {
             buildConfigField("String", "REWARDED_AD_UNIT_ID", "\"ca-app-pub-4973946737213196/2667340525\"")
             buildConfigField("boolean", "IS_PRODUCTION", "true")
             buildConfigField("String", "API_BASE_URL", "\"${(configuredApiUrl.ifBlank { "https://api.example.invalid/" }).replace("\"", "\\\"")}\"")
+            buildConfigField("long", "PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER", "${configuredIntegrityCloudProjectNumber.toLongOrNull() ?: 0L}L")
         }
     }
 
@@ -129,6 +137,7 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("com.google.android.gms:play-services-ads:24.3.0")
+    implementation("com.google.android.play:integrity:1.4.0")
     implementation("com.google.android.ump:user-messaging-platform:3.2.0")
     implementation("com.googlecode.libphonenumber:libphonenumber:8.13.55")
     implementation("com.squareup.retrofit2:retrofit:2.11.0")

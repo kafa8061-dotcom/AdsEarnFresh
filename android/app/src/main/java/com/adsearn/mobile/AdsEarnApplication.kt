@@ -3,6 +3,7 @@ package com.adsearn.mobile
 import android.app.Application
 import com.adsearn.mobile.data.NetworkClient
 import com.adsearn.mobile.data.DeviceIdentityStore
+import com.adsearn.mobile.data.PlayIntegrityClient
 import com.adsearn.mobile.data.SecureSessionStore
 import com.adsearn.mobile.data.deviceFingerprint
 import com.adsearn.mobile.ads.RewardedAdManager
@@ -15,6 +16,8 @@ class AdsEarnApplication : Application() {
         private set
     lateinit var deviceIdentityStore: DeviceIdentityStore
         private set
+    lateinit var playIntegrityClient: PlayIntegrityClient
+        private set
     lateinit var rewardedAdManager: RewardedAdManager
         private set
 
@@ -22,8 +25,10 @@ class AdsEarnApplication : Application() {
         super.onCreate()
         sessionStore = SecureSessionStore(this)
         deviceIdentityStore = DeviceIdentityStore()
+        playIntegrityClient = PlayIntegrityClient(this, BuildConfig.PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER)
         repository = ApiRepository(
             NetworkClient.create(sessionStore), sessionStore, deviceFingerprint(), deviceIdentityStore,
+            playIntegrityClient,
         )
         rewardedAdManager = RewardedAdManager(this)
     }

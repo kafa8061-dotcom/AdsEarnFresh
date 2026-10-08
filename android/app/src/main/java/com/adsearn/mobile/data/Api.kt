@@ -19,6 +19,7 @@ data class SessionRequest(
     val challenge_id: String,
     val public_key: String,
     val signature: String,
+    val integrity_token: String?,
 )
 data class DashboardResponse(
     val user_name: String?,

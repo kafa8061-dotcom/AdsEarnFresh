@@ -44,8 +44,10 @@ def upgrade() -> None:
         sa.Column("nonce", sa.String(length=64), nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("used_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("integrity_token_digest", sa.String(length=64), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("challenge_id"),
+        sa.UniqueConstraint("integrity_token_digest"),
     )
     op.create_index("ix_device_challenges_device_binding", "device_challenges", ["device_binding"], unique=False)
     op.create_index("ix_device_challenges_expires_at", "device_challenges", ["expires_at"], unique=False)
