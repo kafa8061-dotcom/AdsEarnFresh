@@ -6,10 +6,27 @@ from uuid import uuid4
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi import HTTPException
+from sqlalchemy import BigInteger
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.schema import CreateTable
 from sqlalchemy.orm import sessionmaker
 
 from app import admob
-from app.models import User, Wallet, WalletTransaction
+from app import main as api_main
+from app.models import AdEvent, User, Wallet, WalletTransaction
+
+
+def test_ssv_timestamp_column_supports_millisecond_epoch_on_postgresql():
+    ddl = str(CreateTable(AdEvent.__table__).compile(dialect=postgresql.dialect()))
+    assert isinstance(AdEvent.__table__.c.ssv_timestamp_ms.type, BigInteger)
+    assert "ssv_timestamp_ms BIGINT" in ddl
+
+
+def test_production_ssv_gate_is_case_insensitive(client, auth, monkeypatch):
+    monkeypatch.setattr(api_main.settings, "environment", "Production")
+    monkeypatch.setattr(api_main.settings, "admob_ssv_verified", False)
+    response = client.post("/v1/ads/reservations", headers=auth)
+    assert response.status_code == 503
 
 
 def test_admin_is_required(client, auth):

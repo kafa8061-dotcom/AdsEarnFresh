@@ -162,7 +162,7 @@ def dashboard(user: User = Depends(current_user), db: Session = Depends(get_db))
 
 @api.post("/ads/reservations", response_model=AdReservationOut, status_code=status.HTTP_201_CREATED)
 def reserve_ad(user: User = Depends(current_user), db: Session = Depends(get_db)) -> AdReservationOut:
-    if settings.environment == "production" and not settings.admob_ssv_verified:
+    if settings.environment.casefold() == "production" and not settings.admob_ssv_verified:
         raise HTTPException(status_code=503, detail="Rewarded ads are not enabled until live SSV verification is complete")
     db.scalar(select(User).where(User.id == user.id).with_for_update())
     today = datetime.now(timezone.utc).date()

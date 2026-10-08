@@ -2,7 +2,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -46,7 +46,7 @@ class AdEvent(Base):
     calendar_day: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(16), default="reserved", nullable=False)
     transaction_id: Mapped[str | None] = mapped_column(String(160), unique=True)
-    ssv_timestamp_ms: Mapped[int | None] = mapped_column(Integer)
+    ssv_timestamp_ms: Mapped[int | None] = mapped_column(BigInteger)
     ssv_key_id: Mapped[int | None] = mapped_column(Integer)
     ssv_signature: Mapped[str | None] = mapped_column(String(512))
     reward_item: Mapped[str | None] = mapped_column(String(128))
