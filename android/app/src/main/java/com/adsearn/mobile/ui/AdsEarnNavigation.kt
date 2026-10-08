@@ -205,7 +205,7 @@ fun AdsEarnNavigation(viewModel: AppViewModel, rewardedAdManager: RewardedAdMana
                     }
                 },
                 actions = {
-                    if (route !in listOf(NOTIFICATIONS, SETTINGS)) {
+                    if (!state.signedOut && route !in listOf(NOTIFICATIONS, SETTINGS)) {
                         IconButton(onClick = { route = NOTIFICATIONS }) {
                             Icon(Icons.Rounded.Notifications, contentDescription = "Notifications")
                         }
@@ -226,6 +226,7 @@ fun AdsEarnNavigation(viewModel: AppViewModel, rewardedAdManager: RewardedAdMana
                     NavigationBarItem(
                         selected = route == destination,
                         onClick = { route = destination },
+                        enabled = !state.signedOut || destination == HOME,
                         icon = { Icon(icon, contentDescription = label) },
                         label = { Text(label, maxLines = 1) },
                     )
@@ -243,7 +244,10 @@ fun AdsEarnNavigation(viewModel: AppViewModel, rewardedAdManager: RewardedAdMana
             label = "main-navigation",
         ) { destination ->
             when (destination) {
-                HOME -> HomeScreen(state.dashboard, state.wallet, state.error, state.isBusy, { route = ADS }, viewModel::retryConnection)
+                HOME -> HomeScreen(
+                    state.dashboard, state.wallet, state.error, state.isBusy, state.signedOut,
+                    { route = ADS }, viewModel::retryConnection,
+                )
                 ADS -> WatchAdsScreen(
                     dashboard = state.dashboard,
                     adReady = isAdReady,
@@ -311,7 +315,10 @@ fun AdsEarnNavigation(viewModel: AppViewModel, rewardedAdManager: RewardedAdMana
                     busy = state.isBusy,
                     onPreferences = viewModel::savePreferences,
                     onTheme = viewModel::setTheme,
-                    onLogout = viewModel::logout,
+                    onLogout = {
+                        viewModel.logout()
+                        route = HOME
+                    },
                     onPrivacyOptions = {
                         val activity = context as? Activity
                         if (activity == null) {
@@ -375,6 +382,7 @@ private fun HomeScreen(
     wallet: Wallet?,
     error: String?,
     busy: Boolean,
+    signedOut: Boolean,
     onWatch: () -> Unit,
     onRetry: () -> Unit,
 ) {
@@ -383,6 +391,17 @@ private fun HomeScreen(
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 26.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        if (signedOut) {
+            item {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Your secure session is closed.", fontWeight = FontWeight.SemiBold)
+                        Text("Open a new anonymous session when you're ready to continue.")
+                        Button(onClick = onRetry, enabled = !busy) { Text("Open secure session") }
+                    }
+                }
+            }
+        }
         item {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
@@ -881,7 +900,7 @@ private fun SettingsScreen(
         }
         item {
             Text(
-                "Log out revokes this secure device session. With an anonymous account, profile access on this device will end.",
+                "Log out revokes your active session and clears its token. Starting another anonymous session on this device can restore its existing account.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

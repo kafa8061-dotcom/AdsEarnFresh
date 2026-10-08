@@ -27,6 +27,7 @@ import java.io.IOException
 
 data class AppUiState(
     val sessionReady: Boolean = false,
+    val signedOut: Boolean = false,
     val isBusy: Boolean = false,
     val dashboard: Dashboard? = null,
     val profile: Profile? = null,
@@ -51,7 +52,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 repository.openSession()
-                _state.update { it.copy(sessionReady = true) }
+                _state.update { it.copy(sessionReady = true, signedOut = false) }
                 refreshDashboard()
             } catch (exception: IOException) {
                 _state.update { it.copy(error = "Unable to connect right now. Check your connection and try again.") }
@@ -66,7 +67,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(isBusy = true, error = null) }
             try {
                 repository.openSession()
-                _state.update { it.copy(sessionReady = true) }
+                _state.update { it.copy(sessionReady = true, signedOut = false) }
                 refreshDashboard()
             } catch (exception: IOException) {
                 _state.update { it.copy(error = "Unable to connect right now. Check your connection and try again.") }
@@ -181,20 +182,32 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(isBusy = true) }
             try {
                 repository.logout()
-                repository.openSession()
                 _state.update {
                     it.copy(
-                        sessionReady = true, dashboard = null, profile = null, wallet = null,
+                        sessionReady = false, signedOut = true, dashboard = null, profile = null, wallet = null,
                         withdrawals = emptyList(), paymentMethod = null, notifications = emptyList(),
                         supportTickets = emptyList(),
-                        notice = "Signed out. A new secure session is ready.",
+                        notice = "Your secure session has been revoked.",
                     )
                 }
-                refreshDashboard()
             } catch (exception: IOException) {
-                _state.update { it.copy(error = "Unable to complete sign out while offline.") }
+                _state.update {
+                    it.copy(
+                        sessionReady = false, signedOut = true, dashboard = null, profile = null, wallet = null,
+                        withdrawals = emptyList(), paymentMethod = null, notifications = emptyList(),
+                        supportTickets = emptyList(),
+                        error = "Your session was cleared on this device, but server sign-out could not be confirmed.",
+                    )
+                }
             } catch (exception: HttpException) {
-                _state.update { it.copy(error = userMessage(exception)) }
+                _state.update {
+                    it.copy(
+                        sessionReady = false, signedOut = true, dashboard = null, profile = null, wallet = null,
+                        withdrawals = emptyList(), paymentMethod = null, notifications = emptyList(),
+                        supportTickets = emptyList(),
+                        error = userMessage(exception),
+                    )
+                }
             } finally {
                 _state.update { it.copy(isBusy = false) }
             }
