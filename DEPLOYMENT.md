@@ -2,6 +2,10 @@
 
 This repository contains deployment preparation only. It does not identify a hosting provider or production domain, and nothing has been deployed. Do not use the sample values in `backend/.env.example` as live configuration.
 
+## FastAPI Cloud deployment note
+
+The API service must be deployed from the `backend/` directory so the host uses `backend/Dockerfile`, `backend/requirements.txt`, and the backend application package. The backend Docker image now uses Python 3.13 and installs `fastapi[standard]` so the FastAPI CLI is present in the runtime dependency set. A successful build alone does not make the API production-ready: the production environment still must pass the validation below, database migrations must be applied, and the readiness endpoint must return HTTP 200 before Android can use the API.
+
 ## Required owner-provisioned resources
 
 - A production container runtime and private network ingress/load balancer that terminates TLS. Keep the backend reachable only from that ingress and trusted operational networks.
@@ -54,29 +58,17 @@ Before launch, configure automated encrypted backups and a retention schedule th
 - `GET /health` and `GET /health/ready` check PostgreSQL and compare its Alembic revision to the application's expected schema. They return a generic `503` readiness response if the database or required schema is unavailable/out of date.
 - Public API and authenticated/session traffic must use HTTPS. TLS terminates at the real ingress, which must be the only public path to the container and must set trusted forwarded headers. HTTPS is not live until the owner configures domain, DNS, certificate, and ingress.
 
-The AdMob callback is implemented at `GET /v1/admob/ssv`. Configure this exact HTTPS callback in AdMob only after the endpoint is reachable. Keep `ADMOB_SSV_VERIFIED=false` until a real Google callback has been successfully verified. The existing production rewarded App ID and unit ID remain configured in code; no live callback was tested here.
+## AdMob, integrity, and wallet gates
 
-## Reward funding and withdrawals
+- Keep `ADMOB_SSV_VERIFIED=false` until the HTTPS callback URL is configured in the AdMob console and a genuine signed Google callback has been validated.
+- Keep `ANONYMOUS_SESSIONS_ENABLED=false` until Play Integrity is configured and validated against the actual production package/signing certificate, and shared edge rate limiting is active.
+- Keep `WALLET_FUNDING_ENABLED=false` and `WITHDRAWALS_ENABLED=false` until a lawful, funded reward policy exists and has been reviewed. AdMob publisher revenue is paid to the app publisher; it is not a guaranteed per-view cash payment to each viewer. Never credit a wallet simply because an ad was displayed or completed.
+- Do not claim that real ads, server-verified completions, user accounts, or withdrawals work until the relevant live test passes.
 
-AdMob publisher revenue and the SSV callback's network reward metadata are not AdsEarn wallet funds. A verified ad is activity only unless a reviewed server-side reward policy implementation is registered in `backend/app/wallet_accounting.py`. No policy is currently registered. Keep `WALLET_FUNDING_ENABLED=false`, `REWARD_POLICY_ID` unset, and `WITHDRAWALS_ENABLED=false`; a policy ID by itself cannot credit funds or pass the production withdrawal gate. When the business owner defines the funding source, eligibility, amount/currency, reversals, reconciliation, and approval controls, implement and review that backend policy, register it, and separately authorize the server-side feature flags. Android does not decide reward amounts. Every future wallet movement must go through `post_wallet_entry`, which requires an exact Decimal amount, a ledger type and reference, locks the wallet, prevents negative balances, and records the movement in the same database transaction.
+## Android network and ad diagnostics
 
-## Google Play Integrity and sessions
+The Android manifest includes INTERNET and ACCESS_NETWORK_STATE permissions. Development uses Google's official test ad IDs and is not the production build. Production uses the configured AdsEarn AdMob App ID and rewarded unit ID. If an ad fails to load, Android Logcat entries tagged `AdsEarnRewardedAd` report the Google SDK's load error code, domain, and message; that error distinguishes network/SDK/no-fill problems from a backend reservation failure. The Android API base URL is configured in the untracked `android/local.properties`, not in the repository, and must be a real HTTPS API root ending in `/`.
 
-In Play Console, link the production app to the intended Cloud project and obtain the Play App Signing certificate digest. In Google Cloud, enable Play Integrity API access and grant the backend runtime identity permission to decode tokens. Use host workload identity or securely mounted Application Default Credentials; never put service-account credentials in the image, repository, Android app, or logs.
+## Launch prerequisites
 
-Set `PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER`, `PLAY_INTEGRITY_PACKAGE_NAME`, and `PLAY_INTEGRITY_CERTIFICATE_SHA256` from the real project and Play signing configuration. The certificate digest must match Google's decoded verdict. Production anonymous-session issuance has a separate `ANONYMOUS_SESSIONS_ENABLED=false` gate. Keep it false until the Cloud/Play configuration works with real Play-installed tokens and backend verification succeeds. Set `EDGE_RATE_LIMITING_CONFIGURED=true` only after shared ingress rate limits have actually been deployed and reviewed; otherwise production configuration rejects enabling sessions. Missing or rejected attestation continues to fail closed.
-
-## Android production API
-
-Do not build a production variant until a real HTTPS API URL and positive Play Integrity Cloud project number are available. Configure them in the ignored `android/local.properties` file:
-
-```properties
-API_BASE_URL=https://<real-production-api-domain>/
-PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER=<real-cloud-project-number>
-```
-
-The Gradle production-variant guard rejects missing, non-HTTPS, or local API URLs. Development variants and test AdMob IDs remain separate. Never use the development API or test AdMob IDs in a production release.
-
-## External approvals and launch blockers
-
-Owner-controlled steps include cloud/vendor account and billing approval, domain/DNS and TLS control, Play Console linking and signing-certificate access, Cloud API/IAM approval, AdMob callback configuration/live validation, administrator approval, rate-limit policy, privacy/legal review, and the wallet reward/funding business policy. The wallet remains zero-funded and ad completions do not create user funds until a legitimate policy and funding source are defined.
+Read this guide before launch. Provision persistent PostgreSQL and an HTTPS API, set secrets through the host's secret manager, configure the AdMob SSV callback, live-test SSV before enabling it, provision Google Play Integrity for stronger device attestation, arrange reviewed/legitimate wallet funding rules before allowing withdrawals, and complete Play/legal/privacy release steps. Never commit environment files or signing keys.

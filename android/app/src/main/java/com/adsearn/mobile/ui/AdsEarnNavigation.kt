@@ -268,13 +268,18 @@ fun AdsEarnNavigation(viewModel: AppViewModel, rewardedAdManager: RewardedAdMana
                             } catch (exception: HttpException) {
                                 viewModel.reportError(
                                     when (exception.code()) {
+                                        401 -> "Your secure session needs to reconnect. Return Home and tap Try again."
                                         429 -> "You've reached today's limit. Come back tomorrow."
-                                        503 -> "No advertisement is available right now. Please try again later."
-                                        else -> "We couldn't start an advertisement. Please try again later."
+                                        503 -> "The ad service is not ready yet. The backend may still be deploying or awaiting verification."
+                                        else -> "The server rejected the ad request (HTTP ${exception.code()}). Please try again later."
                                     },
                                 )
                             } catch (exception: IOException) {
-                                viewModel.reportError("Unable to connect right now. Please try again later.")
+                                viewModel.reportError(
+                                    "The AdsEarn server could not be reached. Check the configured API address and deployment.",
+                                )
+                            } catch (exception: Exception) {
+                                viewModel.reportError("We couldn't start the advertisement. Please try again later.")
                             }
                         }
                     },
