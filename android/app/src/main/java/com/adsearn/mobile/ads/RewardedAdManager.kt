@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import com.adsearn.mobile.BuildConfig
 import com.google.android.gms.ads.AdError
 import com.google.android.gms.ads.AdRequest
@@ -31,9 +32,14 @@ class RewardedAdManager(context: Context) {
     private val retryLoad = Runnable { load() }
 
     fun initialize() {
-        if (initialized) return
+        if (initialized || released) return
         initialized = true
-        MobileAds.initialize(applicationContext) { handler.post { load() } }
+        MobileAds.initialize(applicationContext) {
+            handler.post {
+                Log.i(TAG, "Mobile Ads SDK initialized; loading rewarded ad unit ${BuildConfig.REWARDED_AD_UNIT_ID}")
+                load()
+            }
+        }
     }
 
     fun preload() {
@@ -43,6 +49,7 @@ class RewardedAdManager(context: Context) {
     private fun load() {
         if (!initialized || rewardedAd != null || loading || released) return
         loading = true
+        Log.d(TAG, "Starting rewarded-ad load; production=${BuildConfig.IS_PRODUCTION}")
         RewardedAd.load(
             applicationContext,
             BuildConfig.REWARDED_AD_UNIT_ID,
@@ -53,12 +60,18 @@ class RewardedAdManager(context: Context) {
                     if (released) return
                     rewardedAd = ad
                     _isReady.value = true
+                    Log.i(TAG, "Rewarded ad loaded successfully")
                 }
 
                 override fun onAdFailedToLoad(error: LoadAdError) {
                     loading = false
                     rewardedAd = null
                     _isReady.value = false
+                    Log.w(
+                        TAG,
+                        "Rewarded ad load failed: code=${error.code}, domain=${error.domain}, " +
+                            "message=${error.message}, responseInfo=${error.responseInfo}",
+                    )
                     handler.removeCallbacks(retryLoad)
                     handler.postDelayed(retryLoad, RETRY_MILLIS)
                 }
@@ -102,6 +115,7 @@ class RewardedAdManager(context: Context) {
             }
 
             override fun onAdFailedToShowFullScreenContent(error: AdError) {
+                Log.w(TAG, "Rewarded ad failed to show: code=${error.code}, message=${error.message}")
                 finish()
                 load()
             }
@@ -123,6 +137,7 @@ class RewardedAdManager(context: Context) {
     }
 
     private companion object {
+        const val TAG = "AdsEarnRewardedAd"
         const val RETRY_MILLIS = 30_000L
     }
 }
